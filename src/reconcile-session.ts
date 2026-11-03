@@ -36,8 +36,8 @@ import { getSession, isTaskThread, updateSession } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { ABSOLUTE_CEILING_MS_RAW, CLAIM_STUCK_MS_RAW } from './config.js';
 import { log } from './log.js';
-import { heartbeatPath, withExistingMailboxSession } from './session-manager.js';
-import { getContainerStartedAtMs, isContainerRunning, killContainer } from './container-runner.js';
+import { heartbeatPath, recoverInterruptedMailboxWrite, withExistingMailboxSession } from './session-manager.js';
+import { confirmNoContainer, getContainerStartedAtMs, isContainerRunning, killContainer } from './container-runner.js';
 import { requestWake } from './request-wake.js';
 import type { Session } from './types.js';
 import type { ContainerState, InboundMailbox, OutboundMailbox } from './mailbox/index.js';
@@ -153,6 +153,12 @@ async function reconcileActiveSession(session: Session): Promise<void> {
   if (!agentGroup) return;
 
   try {
+    // Before any mailbox read: a writer that died mid-commit (reboot, OOM, Docker
+    // restart) makes those reads throw, so this sweep could never wake the session.
+    if (await recoverInterruptedMailboxWrite(agentGroup.id, session.id, () => confirmNoContainer(session.id))) {
+      log.warn('Recovered an interrupted outbound write', { agentGroupId: agentGroup.id, sessionId: session.id });
+    }
+
     let dueCount = 0;
     let shouldWake = false;
     const exists = await withExistingMailboxSession(agentGroup.id, session.id, async (mailbox) => {

@@ -42,6 +42,20 @@ export function openOutboundDbRw(dbPath: string): Database.Database {
   return db;
 }
 
+/**
+ * Roll back a write its writer died during. The host's polls open outbound.db
+ * read-only, which can't clear a hot journal, so without this nothing does until
+ * a container next spawns. Throws at once, rather than waiting, if a writer holds it.
+ */
+export function rollBackOutboundJournal(dbPath: string): void {
+  const db = new Database(dbPath, { timeout: 0 });
+  try {
+    db.pragma('journal_mode = DELETE');
+  } finally {
+    db.close();
+  }
+}
+
 export function upsertSessionRouting(
   db: Database.Database,
   routing: { channel_type: string | null; platform_id: string | null; thread_id: string | null },

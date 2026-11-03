@@ -9,9 +9,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { SupervisedHandle, SupervisedSnapshot } from './drivers/session-events.js';
 
 const snapshots: SupervisedSnapshot[] = [];
+const listHook: { run?: () => void } = {};
 vi.mock('./drivers/index.js', () => ({
   getSessionDriver: () => ({
-    listSessions: async () => snapshots,
+    listSessions: async () => {
+      listHook.run?.();
+      return snapshots;
+    },
     capabilities: () => ({}),
   }),
   isSessionEventsDriver: () => false,
@@ -20,9 +24,12 @@ vi.mock('./drivers/index.js', () => ({
 import {
   abortGatewaySessionObservers,
   adoptRunningSessions,
+  confirmNoContainer,
+  _resetAdoptionRetryStateForTesting,
   _setFinishFenceScheduleForTesting,
   isContainerRunning,
   killContainer,
+  wakeContainer,
 } from './container-runner.js';
 import { type GatewaySessionInput, resetGatewayProvider } from './gateway-providers/index.js';
 const release = vi.fn(async () => {});
@@ -34,7 +41,7 @@ const ensure = vi.fn(async (_input: GatewaySessionInput) => ({
 }));
 const reapOrphans = vi.fn(async () => {});
 import { getSessionClaim } from './db/coordination.js';
-import { initTestDb, closeDb, runMigrations, createAgentGroup, createSession } from './db/index.js';
+import { initTestDb, closeDb, runMigrations, createAgentGroup, createSession, getSession } from './db/index.js';
 
 function now(): string {
   return new Date().toISOString();
@@ -60,6 +67,7 @@ function fakeHandle(sessionId: string, name: string): SupervisedHandle {
 
 beforeEach(async () => {
   snapshots.length = 0;
+  delete listHook.run;
   release.mockClear();
   ensure.mockClear();
   reapOrphans.mockClear();
@@ -99,6 +107,63 @@ afterEach(async () => {
   }
   resetGatewayProvider();
   await closeDb();
+});
+
+describe('confirmNoContainer', () => {
+  const snapshot = (sessionId: string, phase: string) =>
+    ({ handle: fakeHandle(sessionId, 'container'), phase }) as SupervisedSnapshot;
+
+  it.each([
+    ['nothing listed', [], true],
+    ['a terminal container', [['sess-1', 'terminal']], true],
+    ["another session's container", [['sess-2', 'running']], true],
+    ['a running container this host did not adopt', [['sess-1', 'running']], false],
+    ['a starting container', [['sess-1', 'starting']], false],
+  ] as const)('with %s', async (_name, listed, expected) => {
+    snapshots.push(...listed.map(([sessionId, phase]) => snapshot(sessionId, phase)));
+    expect(await confirmNoContainer('sess-1')).toBe(expected);
+  });
+
+  it('is false when the runtime cannot be listed', async () => {
+    listHook.run = () => {
+      throw new Error('docker down');
+    };
+    expect(await confirmNoContainer('sess-1')).toBe(false);
+  });
+
+  it('is false from adoption until the container has finished', async () => {
+    snapshots.push(snapshot('sess-1', 'running'));
+    await adoptRunningSessions();
+    snapshots.length = 0;
+    expect(await confirmNoContainer('sess-1')).toBe(false);
+
+    killContainer('sess-1', 'test-stop');
+    await vi.waitFor(async () => expect(await confirmNoContainer('sess-1')).toBe(true));
+  });
+
+  it('is false for a surviving container whose adoption claim could not be written', async () => {
+    const coordination = await import('./db/coordination.js');
+    vi.spyOn(coordination, 'tryClaimSession').mockRejectedValueOnce(new Error('store down'));
+    snapshots.push(snapshot('sess-1', 'running'));
+    await adoptRunningSessions();
+    snapshots.length = 0;
+    expect(await confirmNoContainer('sess-1')).toBe(false);
+    _resetAdoptionRetryStateForTesting();
+  });
+
+  it('is false while a wake is in flight, and if one starts during the listing', async () => {
+    const session = (await getSession('sess-1'))!;
+    const wake = wakeContainer(session);
+    expect(await confirmNoContainer('sess-1')).toBe(false);
+    await wake;
+
+    let lateWake: Promise<boolean> | undefined;
+    listHook.run = () => {
+      lateWake = wakeContainer(session);
+    };
+    expect(await confirmNoContainer('sess-1')).toBe(false);
+    await lateWake;
+  });
 });
 
 describe('session claim lifecycle', () => {

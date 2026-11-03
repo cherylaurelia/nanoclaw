@@ -177,6 +177,12 @@ export interface AgentMailbox {
    *   containers on the strength of them.
    */
   session<T>(key: MailboxSessionKey, action: (mailbox: MailboxSession) => T | Promise<T>): Promise<T>;
+  /**
+   * Repair a write its writer died during, for implementations that can be left
+   * in that state. Calls `noWriter` only when there is something to repair, since
+   * the same state appears during a live commit. True when a write was repaired.
+   */
+  recoverInterruptedWrite?(key: MailboxSessionKey, noWriter: () => Promise<boolean>): Promise<boolean>;
 }
 
 export type AgentMailboxFactory = () => AgentMailbox;

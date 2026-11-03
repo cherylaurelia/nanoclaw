@@ -221,6 +221,29 @@ export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
 }
 
+function hasNoKnownContainer(sessionId: string): boolean {
+  return !activeContainers.has(sessionId) && !wakePromises.has(sessionId) && !pendingAdoptions.has(sessionId);
+}
+
+/**
+ * True only when neither this host nor the runtime has a live container for the
+ * session. Asks the runtime too, so it sees one a peer host owns or adoption
+ * skipped; if the runtime can't be listed, the answer is no.
+ */
+export async function confirmNoContainer(sessionId: string): Promise<boolean> {
+  /* eslint-disable no-catch-all/no-catch-all -- fail closed: an unreachable runtime may still have a live writer */
+  try {
+    const snapshots = await getSessionDriver().listSessions(INSTALL_SLUG);
+    if (snapshots.some(({ handle, phase }) => handle.key.sessionId === sessionId && phase !== 'terminal')) return false;
+  } catch (err) {
+    log.warn('Could not list sessions to confirm no container', { sessionId, err });
+    return false;
+  }
+  /* eslint-enable no-catch-all/no-catch-all */
+  // A wake may have started while the runtime was being asked.
+  return hasNoKnownContainer(sessionId);
+}
+
 export function getContainerStartedAtMs(sessionId: string): number | undefined {
   return activeContainers.get(sessionId)?.startedAtMs;
 }

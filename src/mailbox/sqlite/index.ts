@@ -24,6 +24,7 @@ import {
   openInboundDb,
   openOutboundDb,
   openOutboundDbRw,
+  rollBackOutboundJournal,
   replaceDestinations,
   retryWithBackoff,
   upsertSessionRouting,
@@ -458,6 +459,13 @@ export class SqliteAgentMailbox implements AgentMailbox {
 
   async runnerEnvironment(_key: MailboxSessionKey): Promise<Record<string, string>> {
     return {};
+  }
+
+  async recoverInterruptedWrite(key: MailboxSessionKey, noWriter: () => Promise<boolean>): Promise<boolean> {
+    const outboundPath = sessionMailboxPath(key, 'outbound');
+    if (!fs.existsSync(`${outboundPath}-journal`) || !(await noWriter())) return false;
+    rollBackOutboundJournal(outboundPath);
+    return true;
   }
 
   async session<T>(key: MailboxSessionKey, action: (mailbox: MailboxSession) => T | Promise<T>): Promise<T> {

@@ -462,6 +462,15 @@ export function withExistingMailboxSession<T>(
   return runMailboxSession(agentGroupId, sessionId, action, false);
 }
 
+/** See AgentMailbox.recoverInterruptedWrite. */
+export async function recoverInterruptedMailboxWrite(
+  agentGroupId: string,
+  sessionId: string,
+  noWriter: () => Promise<boolean>,
+): Promise<boolean> {
+  return (await getAgentMailbox().recoverInterruptedWrite?.(mailboxKey(agentGroupId, sessionId), noWriter)) ?? false;
+}
+
 async function runMailboxSession<T>(
   agentGroupId: string,
   sessionId: string,
